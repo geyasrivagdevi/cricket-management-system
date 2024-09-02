@@ -1,16 +1,19 @@
-require('dotenv').config();  // Load environment variables from .env file
+require('dotenv').config(); // Load environment variables from .env file
 
 const express = require('express');
 const app = express();
 const bcrypt = require('bcrypt');
 const passport = require('passport');
-const initializePassport = require('./passport-config');
+const LocalStrategy = require('passport-local').Strategy;
 const flash = require('express-flash');
 const session = require('express-session');
 const methodOverride = require('method-override');
 const mysql = require('mysql2');
-
 const crud = require('./crud'); // Import CRUD operations
+const bodyParser = require('body-parser');
+const jwt = require('jsonwebtoken'); 
+const axios = require('axios'); 
+const fetch = require('node-fetch');
 
 // Create a connection to the database using environment variables
 const connection = mysql.createConnection({
@@ -30,88 +33,7 @@ connection.connect((err) => {
   console.log('Connected to the database.');
 });
 
-// Routes
-
-// Create User
-app.post('/users', (req, res) => {
-  const { name, email, password } = req.body;
-  crud.createUser(name, email, password, (err, result) => {
-    if (err) {
-      return res.status(500).send('Error creating user');
-    }
-    res.status(201).json({ id: result.insertId });
-  });
-});
-
-// Read Users
-app.get('/users', (req, res) => {
-  crud.getUsers((err, users) => {
-    if (err) {
-      return res.status(500).send('Error retrieving users');
-    }
-    res.json(users);
-  });
-});
-
-// Read User by ID
-app.get('/users/:id', (req, res) => {
-  const userId = req.params.id;
-  crud.getUserById(userId, (err, user) => {
-    if (err) {
-      return res.status(500).send('Error retrieving user');
-    }
-    if (!user) {
-      return res.status(404).send('User not found');
-    }
-    res.json(user);
-  });
-});
-  
-// Update User
-app.put('/users/:id', (req, res) => {
-    const userId = req.params.id;
-    const { name, email, password } = req.body;
-    crud.updateUser(userId, name, email, password, (err, result) => {
-      if (err) {
-        return res.status(500).send('Error updating user');
-      }
-      if (result.affectedRows === 0) {
-        return res.status(404).send('User not found');
-      }
-      res.send('User updated successfully');
-    });
-  });
-  
-  // Delete User
-app.delete('/users/:id', (req, res) => {
-    const userId = req.params.id;
-    crud.deleteUser(userId, (err, result) => {
-      if (err) {
-        return res.status(500).send('Error deleting user');
-      }
-      if (result.affectedRows === 0) {
-        return res.status(404).send('User not found');
-      }
-      res.send('User deleted successfully');
-    });
-  });
-
-const PORT = process.env.PORT || 3000;
-
-// Initialize Passport
-initializePassport(
-    passport,
-    email => users.find(user => user.email === email),
-    id => users.find(user => user.id === id)
-);
-
-const users = [];
-
-app.set('view engine', 'ejs');
-const path = require('path');
-const { name } = require('ejs');
-app.set('views', path.join(__dirname, 'views'));
-
+// Middleware setup
 app.use(express.urlencoded({ extended: false }));
 app.use(flash());
 app.use(session({
@@ -123,68 +45,266 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 app.use(methodOverride("_method"));
+app.use(bodyParser.urlencoded({ extended: false }));
 
-// Routes
-app.post("/login", checkNotAuthenticated, passport.authenticate("local", {
-    successRedirect: "/",
-    failureRedirect: "/login",
-    failureFlash: true
-}));
+app.use((err, req, res, next) => {
+  console.error('Error details:', err.stack); // Log stack trace
+  res.status(500).send('Something went wrong!');
+});
+
+
+// View engine setup
+app.set('view engine', 'ejs');
+const path = require('path');
+app.set('views', path.join(__dirname, 'views'));
+
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Authentication middleware
+function authenticate(req, res, next) {
+  const token = req.headers['authorization'];
+
+  if (!token) {
+    return res.status(401).json({ message: 'No token provided.' });
+  }
+
+  // Verify token (example using JWT)
+  jwt.verify(token, 'your-secret-key', (err, decoded) => {
+    if (err) {
+      return res.status(401).json({ message: 'Failed to authenticate token.' });
+    }
+    req.user = decoded;
+    next();
+  });
+}
+
+// Apply middleware to routes
+app.use('/api/protected', authenticate, (req, res) => {
+  res.json({ message: 'You have access to this protected route.' });
+});
+
+// Define routes for teams and players
+app.get('/teams', async (req, res) => {
+  try {
+    const response = await axios.get('http://localhost:5000/teams');
+    res.render('teams', { teams: response.data });
+  } catch (error) {
+    console.error('Error retrieving teams from Flask API:', error);
+    res.status(500).send('Error retrieving teams');
+  }
+});
+
+app.get('/players', async (req, res) => {
+  try {
+    const response = await axios.get('http://localhost:5000/players');
+    res.render('players', { players: response.data });
+  } catch (error) {
+    console.error('Error retrieving players from Flask API:', error);
+    res.status(500).send('Error retrieving players');
+  }
+});
+
+app.get('/', (req, res) => {
+  res.render('live');
+});
+
+
+app.get('/api/cricket-scores', async (req, res) => {
+  const url = "https://cricbuzz-cricket.p.rapidapi.com/matches/v1/recent";
+  const headers = {
+    "X-RapidAPI-Key": process.env.RAPIDAPI_KEY, // Ensure this environment variable is correctly set
+    "X-RapidAPI-Host": "cricbuzz-cricket.p.rapidapi.com"
+  };
+  
+  try {
+    const response = await fetch(url, { headers });
+    
+    if (!response.ok) {
+      // Log the response status and status text for debugging
+      const errorText = await response.text(); // Get error text for more details
+      throw new Error(`Error fetching scores: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+    
+    const data = await response.json();
+    
+    // Process the data as required
+    const matchesData = [];
+    if (data['typeMatches']) {
+      for (const match of data['typeMatches'][0]['seriesMatches'][0]['seriesAdWrapper']['matches']) {
+        const matchInfo = {
+          matchDesc: match['matchInfo']['matchDesc'],
+          team1: match['matchInfo']['team1']['teamName'],
+          team2: match['matchInfo']['team2']['teamName'],
+          seriesName: match['matchInfo']['seriesName'],
+          matchFormat: match['matchInfo']['matchFormat'],
+          status: match['matchInfo']['status'],
+          team1Score: `${match['matchScore']['team1Score']['inngs1']['runs']}/${match['matchScore']['team1Score']['inngs1']['wickets']} in ${match['matchScore']['team1Score']['inngs1']['overs']} overs`,
+          team2Score: `${match['matchScore']['team2Score']['inngs1']['runs']}/${match['matchScore']['team2Score']['inngs1']['wickets']} in ${match['matchScore']['team2Score']['inngs1']['overs']} overs`
+        };
+        matchesData.push(matchInfo);
+      }
+    } else {
+      return res.status(404).json({ error: 'No match data found' });
+    }
+    
+    res.json(matchesData);
+  } catch (error) {
+    console.error('Error fetching scores:', error);
+    res.status(500).json({ error: 'Failed to fetch scores' });
+  }
+});
+
+
+app.get('/api/upcoming-matches', async (req, res) => {
+  try {
+      const response = await axios.get('http://localhost:5000/upcoming-matches');
+      res.json(response.data);
+  } catch (error) {
+      console.error('Error fetching upcoming matches:', error);
+      res.status(500).send('Error fetching upcoming matches');
+  }
+});
+
+// Other routes and passport configuration
+
+app.post('/login', passport.authenticate('local', {
+  successRedirect: '/index',
+  failureRedirect: '/login',
+  failureFlash: true
+}), (req, res) => {
+  console.log('User authenticated:', req.user);
+  res.redirect('/index');
+});
 
 app.post("/register", checkNotAuthenticated, async (req, res) => {
-    try {
-        const hashedPassword = await bcrypt.hash(req.body.password, 10);
-        users.push({
-            id: Date.now().toString(),
-            name: req.body.name,
-            email: req.body.email,
-            password: hashedPassword,
+  try {
+    const { name, email, password } = req.body;
+    connection.query('SELECT * FROM users WHERE email = ?', [email], async (err, results) => {
+      if (err) {
+        console.error('Error querying database:', err);
+        return res.status(500).send('Internal server error');
+      }
+      if (results.length > 0) {
+        return res.render('register', { messages: { error: 'Email already in use' } });
+      }
+
+      try {
+        // Hash the password
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        // Insert new user into the database
+        connection.query('INSERT INTO users (name, email, password) VALUES (?, ?, ?)', [name, email, hashedPassword], (err) => {
+          if (err) {
+            console.error('Error inserting user:', err);
+            return res.status(500).send('Internal server error');
+          }
+
+          res.redirect('/login');
         });
-        res.redirect("/login");
-    } catch (e) {
-        console.log(e);
-        res.redirect("/register");
+      } catch (hashError) {
+        console.error('Error hashing password:', hashError);
+        res.status(500).send('Internal server error');
+      }
+    });
+  } catch (e) {
+    console.error('Error during registration:', e);
+    res.redirect('/register');
+  }
+});
+
+
+passport.use(new LocalStrategy(
+  {usernameField: 'email', passwordField: 'password'},
+  (email, password, done) => {
+    crud.getUserByEmail(
+      email,
+      (err, results) => {
+        if (err) {
+          return done(err); // handle database errors
+        }
+        if (!results || results.length === 0) {
+          return done(null, false, { message: 'Incorrect email.' });
+        }
+        const user = results[0];
+
+        bcrypt.compare(password, user.password, function(err, isMatch) {
+          if (err) {
+            return done(err);
+          }
+          if (isMatch) {
+            return done(null, user);
+          } else {
+            return done(null, false, { message: 'Incorrect password.' });
+          }
+        });
+      });
+  }
+));
+
+// Passport serialization
+passport.serializeUser((user, done) => {
+  done(null, user.id);
+});
+
+passport.deserializeUser((id, done) => {
+  crud.getUserById(
+    id,
+    (err, results) => {
+      if (err) {
+        return done(err);
+      }
+      done(null, results);
     }
+  );
 });
 
 app.get('/', checkAuthenticated, (req, res) => {
-    res.render("index.ejs", { name: req.user.name });
+  res.render('index.ejs', { name: req.user.name });
+});
+
+app.get('/index', (req, res) => {
+  if (req.isAuthenticated()) {
+    res.render('index', { email: req.user.email });
+  } else {
+    res.redirect('/login');
+  }
 });
 
 app.get('/login', checkNotAuthenticated, (req, res) => {
-    res.render("login.ejs");
+  res.render("login.ejs");
 });
 
 app.get('/register', checkNotAuthenticated, (req, res) => {
-    res.render("register.ejs");
+  res.render("register.ejs");
 });
 
 app.delete("/logout", (req, res, next) => {
-    req.logout((err) => {
-        if (err) return next(err);
-        res.redirect("/");
-    });
+  req.logout((err) => {
+    if (err) return next(err);
+    res.redirect("/");
+  });
 });
 
 function checkAuthenticated(req, res, next) {
-    if (req.isAuthenticated()) {
-        return next();
-    }
-    res.redirect("/login");
+  if (req.isAuthenticated()) {
+    return next();
+  }
+  res.redirect("/login");
 }
 
 function checkNotAuthenticated(req, res, next) {
-    if (req.isAuthenticated()) {
-        return res.redirect("/");
-    }
-    next();
+  if (req.isAuthenticated()) {
+    return res.redirect("/");
+  }
+  next();
 }
 
 app.use((err, req, res, next) => {
-    console.error(err.stack);
-    res.status(500).send('Something broke!');
+  console.error(err.stack);
+  res.status(500).send('Something broke!');
 });
 
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+  console.log(`Server is running on port ${PORT}`);
 });
